@@ -154,7 +154,7 @@ def upload_code_to_gcs(bucket_name: str = GCS_BUCKET):
     logger = get_run_logger()
 
     # Get the current script path
-    script_path = "minhash_deduplication_flow.py"
+    script_path = "../src/minhash_deduplication_flow.py"
     script_name = os.path.basename(script_path)
 
     # Create a unique file name to avoid conflicts
