@@ -1,0 +1,19 @@
+# example: https://github.com/kubeflow/examples/blob/master/.pylintrc
+
+[MASTER]
+# Errors to disable
+disable=missing-module-docstring,broad-except,unspecified-encoding,unnecessary-lambda,cell-var-from-loop,broad-exception-raised,import-error,consider-using-f-string,logging-not-lazy,logging-fstring-interpolation
+
+[FORMAT]
+# Maximum characters per line
+max-line-length=100
+
+[DESIGN]
+# Maximum number of arguments for function / method
+max-args=10
+
+# Maximum number of locals for function / method body
+max-locals=30
+
+# Minimum public methods that class should have
+min-public-methods=0

@@ -23,12 +23,15 @@ RNG = np.random.RandomState(SEED)
 MAX_HASH = np.uint64((1 << 32) - 1)
 MERSENNE_PRIME = np.uint64((1 << 61) - 1)
 
+
 def store_in_gcs(df, filepath):
     logger = get_run_logger()
 
     staging_gcs_bucket = Variable.get("staging_gcs_bucket")
     staging_dir = Variable.get("staging_dir")
-    df.write.format("delta").mode("overwrite").save(os.path.join(staging_gcs_bucket, staging_dir, filepath))
+    df.write.format("delta").mode("overwrite").save(
+        os.path.join(staging_gcs_bucket, staging_dir, filepath)
+    )
     logger.info(f"Stored {os.path.join(staging_gcs_bucket, staging_dir, filepath)}")
 
 
@@ -62,15 +65,21 @@ def init_spark_session(app_name: str = "MinHashLSH") -> SparkSession:
     conf.set("spark.app.name", app_name)
     conf.set("spark.debug.maxToStringFields", "100")
 
-    spark = SparkSession.builder\
-        .config(conf=conf) \
-        .config("spark.executor.memory", "10g") \
-        .config("spark.driver.memory", "4g") \
-        .config("spark.jars.packages", "com.google.cloud.spark:spark-bigquery-with-dependencies_2.12:0.27.1," +
-                "io.delta:delta-spark_2.12:3.3.0") \
-        .config("spark.sql.extensions", "io.delta.sql.DeltaSparkSessionExtension") \
-        .config("spark.sql.catalog.spark_catalog", "org.apache.spark.sql.delta.catalog.DeltaCatalog") \
+    spark = (
+        SparkSession.builder.config(conf=conf)
+        .config("spark.executor.memory", "10g")
+        .config("spark.driver.memory", "4g")
+        .config(
+            "spark.jars.packages",
+            "com.google.cloud.spark:spark-bigquery-with-dependencies_2.12:0.27.1,"
+            + "io.delta:delta-spark_2.12:3.3.0",
+        )
+        .config("spark.sql.extensions", "io.delta.sql.DeltaSparkSessionExtension")
+        .config(
+            "spark.sql.catalog.spark_catalog", "org.apache.spark.sql.delta.catalog.DeltaCatalog"
+        )
         .getOrCreate()
+    )
     #
     spark.conf.set("credentialsFile", "resounding-keel-378411-1960f8a560a5.json")
     spark.conf.set("parentProject", "resounding-keel-378411")
@@ -82,12 +91,12 @@ def init_spark_session(app_name: str = "MinHashLSH") -> SparkSession:
 
 @task(name="Generate LSH Parameters")
 def generate_lsh_parameters(
-        threshold: float,
-        num_perm: int,
-        b: int = None,
-        r: int = None,
-        false_positive_weight: float = 0.5,
-        false_negative_weight: float = 0.5,
+    threshold: float,
+    num_perm: int,
+    b: int = None,
+    r: int = None,
+    false_positive_weight: float = 0.5,
+    false_negative_weight: float = 0.5,
 ) -> Dict[str, Any]:
     """
     Generate LSH parameters for MinHash algorithm.
@@ -115,10 +124,10 @@ def generate_lsh_parameters(
     logger = get_run_logger()
 
     def optimal_param(
-            threshold: float,
-            num_perm: int,
-            false_positive_weight: float = 0.5,
-            false_negative_weight: float = 0.5,
+        threshold: float,
+        num_perm: int,
+        false_positive_weight: float = 0.5,
+        false_negative_weight: float = 0.5,
     ):
         """
         Compute the optimal `MinHashLSH` parameter that minimizes the weighted sum
@@ -194,7 +203,7 @@ def generate_lsh_parameters(
     retry_delay_seconds=30,
     cache_key_fn=task_input_hash,
     cache_expiration=timedelta(hours=1),
-    tags=["extract", "data-pipeline"]
+    tags=["extract", "data-pipeline"],
 )
 def load_data_from_bigquery(table: str, column: str) -> Tuple:
     """
@@ -217,11 +226,7 @@ def load_data_from_bigquery(table: str, column: str) -> Tuple:
 
     spark = init_spark_session()
 
-    df = spark.read\
-        .format("bigquery")\
-        .option("table", table) \
-        .option("viewsEnabled", "true")\
-        .load()
+    df = spark.read.format("bigquery").option("table", table).option("viewsEnabled", "true").load()
     df = df.withColumn("__id__", F.monotonically_increasing_id()).cache()
 
     records = df.select("__id__", column).rdd
@@ -231,7 +236,11 @@ def load_data_from_bigquery(table: str, column: str) -> Tuple:
     store_in_gcs(df, "task=load_data_from_bigquery/bq_dataframe")
 
 
-@task(name="Repartition Records", description="Repartition the data", tags=["transform", "data-pipeline"])
+@task(
+    name="Repartition Records",
+    description="Repartition the data",
+    tags=["transform", "data-pipeline"],
+)
 def repartition_records(num_perm: int, column: str):
     """
     Repartition the records for better parallelism.
@@ -259,13 +268,17 @@ def repartition_records(num_perm: int, column: str):
     return records.repartition(num_perm * 2).cache()
 
 
-@task(name="Generate Hash Values", description="Generate Hash Values", tags=["transform", "data-pipeline"])
+@task(
+    name="Generate Hash Values",
+    description="Generate Hash Values",
+    tags=["transform", "data-pipeline"],
+)
 def create_hash_value_generator(
-        ngram_size: int,
-        min_ngram_size: int,
-        num_perm: int,
-        hash_ranges: List[Tuple[int, int]],
-        permutations: np.ndarray,
+    ngram_size: int,
+    min_ngram_size: int,
+    num_perm: int,
+    hash_ranges: List[Tuple[int, int]],
+    permutations: np.ndarray,
 ):
     """
     Create a function to generate hash values for documents.
@@ -311,8 +324,8 @@ def create_hash_value_generator(
         return struct.unpack("<I", hashlib.sha1(data).digest()[:4])[0]
 
     def generate_hash_values(
-            content: str,
-            idx: int,
+        content: str,
+        idx: int,
     ) -> List[Tuple[int, bytes, int]]:
         """
         Generate the MinHashLSH values for a given document.
@@ -425,7 +438,6 @@ def find_connected_components(max_iterations: int = 100):
 
 @task(name="Generate Edges")
 def generate_edges(num_perm, column, hash_value_generator, edge_generator):
-
     logger = get_run_logger()
     logger.info("Generating edges")
 
@@ -433,24 +445,19 @@ def generate_edges(num_perm, column, hash_value_generator, edge_generator):
 
     repartitioned_records = repartition_records(num_perm, column)
     edges = (
-        repartitioned_records.flatMap(
-            lambda x: hash_value_generator(x[1], x[0])
-        )
+        repartitioned_records.flatMap(lambda x: hash_value_generator(x[1], x[0]))
         .groupBy(lambda x: (x[0], x[1]))
         .flatMap(lambda x: edge_generator([i[2] for i in x[1]]))
         .distinct()
         .cache()
     )
 
-    schema = StructType([
-        StructField("col1", IntegerType(), True),
-        StructField("col2", IntegerType(), True)
-    ])
+    schema = StructType(
+        [StructField("col1", IntegerType(), True), StructField("col2", IntegerType(), True)]
+    )
 
     edges_df = spark.createDataFrame(edges, schema)
-    store_in_gcs(edges_df,  "task=generate_edges/edges_df")
-
-    # return edges FIX ME
+    store_in_gcs(edges_df, "task=generate_edges/edges_df")
 
 
 @task(name="Remove Duplicates")
@@ -475,15 +482,15 @@ def remove_duplicates(results, output: str):
     df = read_from_gcs(spark, "task=load_data_from_bigquery/bq_dataframe")
     if len(results) == 0:
         logger.info("No components found, writing original data to output")
-        df.write.option(
-            "maxRecordsPerFile", 300_000
-        ).option(
-            "intermediateFormat", "orc"
-        ).parquet(output, mode="overwrite")
+        df.write.option("maxRecordsPerFile", 300_000).option("intermediateFormat", "orc").parquet(
+            output, mode="overwrite"
+        )
         return
 
     logger.info(f"Creating components DataFrame with {len(results)} rows")
-    components = spark.createDataFrame(results, schema=["__id__", "component"]).sort(["component", "__id__"])
+    components = spark.createDataFrame(results, schema=["__id__", "component"]).sort(
+        ["component", "__id__"]
+    )
 
     # Show a sample of the components for debugging
     logger.info("Sample of components:")
@@ -496,11 +503,9 @@ def remove_duplicates(results, output: str):
 
     # Write results to output
     logger.info(f"Writing deduplicated data to {output}")
-    df.write.option(
-        "maxRecordsPerFile", 300_000
-    ).option(
-        "intermediateFormat", "orc"
-    ).parquet(output, mode="overwrite")
+    df.write.option("maxRecordsPerFile", 300_000).option("intermediateFormat", "orc").parquet(
+        output, mode="overwrite"
+    )
 
     logger.info("Deduplication completed successfully")
 
@@ -513,15 +518,15 @@ def cleanup_spark():
 
 @flow(name="Near-Deduplication Flow")
 def near_deduplication_flow(
-        table: str,
-        output: str,
-        threshold: float = 0.7,
-        min_ngram_size: int = 5,
-        ngram_size: int = 5,
-        num_perm: int = 256,
-        b=None,
-        r=None,
-        column: str = "content"
+    table: str,
+    output: str,
+    threshold: float = 0.7,
+    min_ngram_size: int = 5,
+    ngram_size: int = 5,
+    num_perm: int = 256,
+    b=None,
+    r=None,
+    column: str = "content",
 ):
     """
     Main flow for near-deduplication.
@@ -596,19 +601,29 @@ def near_deduplication_flow(
 if __name__ == "__main__":
     import argparse
 
-    parser = argparse.ArgumentParser(description="Near-deduplicating BigQuery Table with Prefect and PySpark")
+    parser = argparse.ArgumentParser(
+        description="Near-deduplicating BigQuery Table with Prefect and PySpark"
+    )
 
     # Required arguments
     parser.add_argument("--table", type=str, required=True, help="BigQuery table to deduplicate")
     parser.add_argument("--output", "-o", type=str, required=True, help="Output directory")
 
     # Optional arguments with sensible defaults
-    parser.add_argument("--threshold", type=float, default=0.7, help="Similarity threshold (0.0-1.0)")
-    parser.add_argument("--min_ngram_size", type=int, default=5, help="Minimum document size to process")
+    parser.add_argument(
+        "--threshold", type=float, default=0.7, help="Similarity threshold (0.0-1.0)"
+    )
+    parser.add_argument(
+        "--min_ngram_size", type=int, default=5, help="Minimum document size to process"
+    )
     parser.add_argument("--ngram_size", type=int, default=5, help="N-gram size")
     parser.add_argument("--num_perm", type=int, default=256, help="Number of permutations")
-    parser.add_argument("--b", type=int, default=None, help="Number of bands (if None, computed optimally)")
-    parser.add_argument("--r", type=int, default=None, help="Number of rows per band (if None, computed optimally)")
+    parser.add_argument(
+        "--b", type=int, default=None, help="Number of bands (if None, computed optimally)"
+    )
+    parser.add_argument(
+        "--r", type=int, default=None, help="Number of rows per band (if None, computed optimally)"
+    )
     parser.add_argument("--column", "-c", type=str, default="content", help="Column to deduplicate")
     parser.add_argument("--staging_gcs_bucket", type=str, help="GCS bucket for staging files")
     parser.add_argument("--staging_dir", type=str, default="", help="Directory for staging files")
@@ -628,5 +643,5 @@ if __name__ == "__main__":
         num_perm=args.num_perm,
         b=args.b,
         r=args.r,
-        column=args.column
+        column=args.column,
     )

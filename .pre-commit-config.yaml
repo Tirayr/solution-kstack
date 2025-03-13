@@ -1,0 +1,33 @@
+repos:
+  - repo: local
+    hooks:
+      - id: commit-message
+        name: validate conventional commit message format
+        entry: '\A(?!(feat|docs|refactor|fix|test|break|revert|chore): [A-Z]{2,10}-\d{1,6} .+)'
+        args: [--multiline]
+        stages: [commit-msg]
+        language: pygrep
+      - id: restricted-filenames
+        name: Check commits for CSV files
+        entry: No CSV files should be commited
+        language: fail
+        files: '.*\.(csv)'
+      - id: pylint
+        name: pylint
+        entry: pylint
+        language: system
+        types: [ python ]
+        files: ^src/
+        verbose: true
+        args:
+          [
+              "-rn",
+              "--rcfile=.pylintrc",
+              "--fail-under=8.5"
+          ]
+  - repo: https://github.com/ambv/black
+    rev: 23.1.0
+    hooks:
+      - id: black
+        files: ^src/
+        args: [ --safe, --line-length=100, --target-version=py38 ]
