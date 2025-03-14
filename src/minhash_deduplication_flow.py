@@ -649,29 +649,53 @@ def custom_data_quality_checks(df_before_name: str, df_after_name: str):
     df_after = read_from_gcs(spark, df_after_name)
 
     # Row count comparison
-    row_cnt_bef = df_before.filter(
+    row_cnt_bef_df = df_before.filter(
         (F.col("entity") == "Dataset") & (F.col("name") == "Size")
     ).select(F.col("value"))
 
-    row_cnt_after = df_after.filter(
+    row_cnt_after_df = df_after.filter(
         (F.col("entity") == "Dataset") & (F.col("name") == "Size")
     ).select(F.col("value"))
 
-    if not 80 < ((row_cnt_bef - row_cnt_after) / row_cnt_bef) * 100 < 100:
-        logger.error(f"Unexpected row count: Before={row_cnt_bef} and After={row_cnt_after}")
-        raise Exception("Custom data check failed")
+    if row_cnt_bef_df.count() > 0 and row_cnt_after_df.count() > 0:
+        row_cnt_bef_row = row_cnt_bef_df.collect()[0]
+        row_cnt_after_row = row_cnt_after_df.collect()[0]
+
+        row_cnt_bef = int(row_cnt_bef_row["value"])
+        row_cnt_after = int(row_cnt_after_row["value"])
+
+        percentage_diff = ((row_cnt_bef - row_cnt_after) / row_cnt_bef) * 100
+
+        if not 80 < percentage_diff < 100:
+            logger.error(
+                f"Unexpected row count: Before={row_cnt_bef} and After={row_cnt_after}, percentage difference={percentage_diff}"
+            )
+            raise Exception("Custom data check failed")
+    else:
+        logger.error("Row count DataFrames are empty.")
+        raise Exception("Custom data check failed: Empty DataFrames")
 
     # Schema comparison
-    schema_bef = df_before.filter(
+    schema_bef_df = df_before.filter(
         (F.col("entity") == "Dataset") & (F.col("name") == "schema")
     ).select(F.col("value"))
-    schema_aft = df_before.filter(
+    schema_aft_df = df_after.filter(
         (F.col("entity") == "Dataset") & (F.col("name") == "schema")
     ).select(F.col("value"))
 
-    if schema_bef != schema_aft:
-        logger.error(f"Unexpected schema change: Before={schema_bef} and After={schema_aft}")
-        raise Exception("Custom data check failed")
+    if schema_bef_df.count() > 0 and schema_aft_df.count() > 0:
+        schema_bef_row = schema_bef_df.collect()[0]
+        schema_aft_row = schema_aft_df.collect()[0]
+
+        schema_bef = schema_bef_row["value"]
+        schema_aft = schema_aft_row["value"]
+
+        if schema_bef != schema_aft:
+            logger.error(f"Unexpected schema change: Before={schema_bef} and After={schema_aft}")
+            raise Exception("Custom data check failed")
+    else:
+        logger.error("Schema DataFrames are empty.")
+        raise Exception("Custom data check failed: Empty DataFrames")
 
 
 @task(name="Cleanup Spark Session")
