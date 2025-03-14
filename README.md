@@ -40,6 +40,8 @@ The project utilizes:
         └── sql/
         │   └── kstack_combined_view.sql
         │   └── schema.sql
+        │── scripts/
+        │   └── env.sh
         │── .pre-commit-config.yaml
         │── .pylintrc
         │── Makefile
@@ -55,6 +57,7 @@ Before running the project, ensure you have the following:
 * Google Cloud SDK (gcloud) configured with access to BigQuery and GCS.
 * A Google Cloud project with BigQuery and GCS enabled.
 * Delta Lake library.
+* PyDeequ Library for data quality checks
 
 ## Installation
 
@@ -94,6 +97,7 @@ Before running the project, ensure you have the following:
 To execute the Prefect flow, run the following command from the `src` directory:
 
 ```bash
+source ./scripts/env.sh
 python minhash_deduplication_flow.py --table resounding-keel-378411:kstack.kstack_combined_view 
 --output "gs://kstack_output/data/"
 --min_ngram_size 5 

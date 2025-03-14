@@ -3,18 +3,21 @@ import re
 import struct
 import os
 from itertools import tee
-from datetime import timedelta
 from typing import Iterable, List, Tuple, Dict, Any
 
 import numpy as np
+from scipy.integrate import quad as integrate
 from prefect import task, flow, get_run_logger
 from prefect.variables import Variable
-from prefect.tasks import task_input_hash
 from pyspark import SparkConf
 from pyspark.sql import SparkSession
 from pyspark.sql import functions as F
 from pyspark.sql.types import StructType, StructField, IntegerType
-from scipy.integrate import quad as integrate
+
+import pydeequ
+from pydeequ.analyzers import *
+from pydeequ.checks import *
+from pydeequ.verification import *
 
 # Constants
 SEED = 42
@@ -36,6 +39,9 @@ def store_in_gcs(df, filepath):
 
 
 def read_from_gcs(spark, filepath):
+    logger = get_run_logger()
+    logger.info(f"Reading {filepath} ...")
+
     staging_gcs_bucket = Variable.get("staging_gcs_bucket")
     staging_dir = Variable.get("staging_dir")
 
@@ -72,8 +78,10 @@ def init_spark_session(app_name: str = "MinHashLSH") -> SparkSession:
         .config(
             "spark.jars.packages",
             "com.google.cloud.spark:spark-bigquery-with-dependencies_2.12:0.27.1,"
-            + "io.delta:delta-spark_2.12:3.3.0",
+            + "io.delta:delta-spark_2.12:3.3.0,"
+            + pydeequ.deequ_maven_coord,
         )
+        .config("spark.jars.excludes", pydeequ.f2j_maven_coord)
         .config("spark.sql.extensions", "io.delta.sql.DeltaSparkSessionExtension")
         .config(
             "spark.sql.catalog.spark_catalog", "org.apache.spark.sql.delta.catalog.DeltaCatalog"
@@ -201,8 +209,6 @@ def generate_lsh_parameters(
     description="Extract data from source",
     retries=3,
     retry_delay_seconds=30,
-    cache_key_fn=task_input_hash,
-    cache_expiration=timedelta(hours=1),
     tags=["extract", "data-pipeline"],
 )
 def load_data_from_bigquery(table: str, column: str) -> Tuple:
@@ -460,6 +466,128 @@ def generate_edges(num_perm, column, hash_value_generator, edge_generator):
     store_in_gcs(edges_df, "task=generate_edges/edges_df")
 
 
+@task(name="Deequ analyze data quality")
+def analyze_data_quality(df_name: str):
+    """
+    Analyze the data quality metrics
+    """
+
+    spark = init_spark_session()
+    df = read_from_gcs(spark, df_name)
+    df_name = "task=analyze_data_quality/analysis_result_df({df_name})"
+
+    analyzers = [Size()]
+
+    # Completeness analyzers
+    core_fields = [
+        "repo_id",
+        "path",
+        "content",
+        "owner",
+        "name",
+        "commit_sha",
+        "main_language",
+        "license",
+    ]
+    # Numerical field analyzers
+    numeric_fields = ["size", "stars", "forks", "issues"]
+
+    for field in core_fields:
+        if field in df.columns:
+            analyzers.append(Completeness(field))
+
+    for field in numeric_fields:
+        if field in df.columns:
+            analyzers.append(Mean(field))
+            analyzers.append(Maximum(field))
+            analyzers.append(Minimum(field))
+
+    # Boolean field analyzers
+    if "is_fork" in df.columns:
+        analyzers.append(Completeness("is_fork"))
+
+    # Uniqueness analyzer for composite key
+    analyzers.append(Uniqueness(["repo_id", "path", "commit_sha"]))
+
+    # Run the analyzers properly
+    analysis_result = AnalysisRunner(spark).onData(df).addAnalyzer(analyzers[0])
+
+    # Add each remaining analyzer separately
+    for analyzer in analyzers[1:]:
+        analysis_result = analysis_result.addAnalyzer(analyzer)
+
+    # Run the analysis
+    result = analysis_result.run()
+
+    analysis_df = AnalyzerContext.successMetricsAsDataFrame(spark, result)
+    schema = analysis_df.schema.json()
+
+    schema_df = spark.createDataFrame(
+        [("Dataset", "*", "schema", schema)], ["entity", "instance", "name", "value"]
+    )
+
+    # add new row to DataFrame
+    analysis_result_df = analysis_df.union(schema_df)
+
+    analysis_result_df.show(50)
+    store_in_gcs(analysis_result_df, df_name)
+
+    return df_name
+
+
+@task(name="Deequ data quality checks")
+def run_data_quality_checks(df_name: str):
+    """
+    Run PyDeequ data quality checks on the repository code dataset
+    """
+
+    spark = init_spark_session()
+    df = read_from_gcs(spark, df_name)
+    logger = get_run_logger()
+
+    check = Check(spark, CheckLevel.Error, "Data Quality Check for Repository Code Dataset")
+
+    # Completeness checks for core fields
+    check = check.hasCompleteness("repo_id", lambda x: x == 1.0)
+    check = check.hasCompleteness("path", lambda x: x == 1.0)
+    check = check.hasCompleteness("content", lambda x: x >= 0.95)
+    check = check.hasCompleteness("owner", lambda x: x == 1.0)
+    check = check.hasCompleteness("name", lambda x: x == 1.0)
+    check = check.hasCompleteness("commit_sha", lambda x: x == 1.0)
+
+    # Uniqueness checks - files should be uniquely identified by repo_id + path + commit_sha
+    check = check.hasUniqueness(["repo_id", "path", "commit_sha"], lambda x: x == 1.0)
+
+    # Consistency checks
+    check = check.isNonNegative("size")
+    check = check.isNonNegative("stars")
+    check = check.isNonNegative("forks")
+    check = check.isNonNegative("issues")
+
+    # After LSH checks - if these columns were added by your MinHash process
+    if "minhash_signature" in df.columns:
+        check = check.hasCompleteness("minhash_signature", lambda x: x >= 0.99)
+
+    if "similarity_score" in df.columns:
+        check = check.isLessThanOrEqualTo("similarity_score", 1.0)
+        check = check.isGreaterThanOrEqualTo("similarity_score", 0.0)
+
+    verification_result = VerificationSuite(spark).onData(df).addCheck(check).run()
+    check_results_df = VerificationResult.checkResultsAsDataFrame(spark, verification_result)
+
+    check_results_df.show(truncate=False)
+
+    # Check if there are any failures
+    failed_checks = check_results_df.filter("check_status != 'Success'")
+    if failed_checks.count() > 0:
+        logger.error("Input data quality checks failed!")
+        raise Exception(f"Data quality checks failed for df_name={df_name}!")
+    else:
+        logger.info("All input data quality checks passed.")
+
+    store_in_gcs(check_results_df, f"task=generate_edges/run_data_quality_checks({df_name})")
+
+
 @task(name="Remove Duplicates")
 def remove_duplicates(results, output: str):
     """
@@ -508,6 +636,42 @@ def remove_duplicates(results, output: str):
     )
 
     logger.info("Deduplication completed successfully")
+    store_in_gcs(df, "task=remove_duplicates/results")
+
+
+@task(name="Custom data quality checks")
+def custom_data_quality_checks(df_before_name: str, df_after_name: str):
+    spark = init_spark_session()
+    logger = get_run_logger()
+
+    logger.info("Reading analyze dataframes before and after")
+    df_before = read_from_gcs(spark, df_before_name)
+    df_after = read_from_gcs(spark, df_after_name)
+
+    # Row count comparison
+    row_cnt_bef = df_before.filter(
+        (F.col("entity") == "Dataset") & (F.col("name") == "Size")
+    ).select(F.col("value"))
+
+    row_cnt_after = df_after.filter(
+        (F.col("entity") == "Dataset") & (F.col("name") == "Size")
+    ).select(F.col("value"))
+
+    if not 80 < ((row_cnt_bef - row_cnt_after) / row_cnt_bef) * 100 < 100:
+        logger.error(f"Unexpected row count: Before={row_cnt_bef} and After={row_cnt_after}")
+        raise Exception("Custom data check failed")
+
+    # Schema comparison
+    schema_bef = df_before.filter(
+        (F.col("entity") == "Dataset") & (F.col("name") == "schema")
+    ).select(F.col("value"))
+    schema_aft = df_before.filter(
+        (F.col("entity") == "Dataset") & (F.col("name") == "schema")
+    ).select(F.col("value"))
+
+    if schema_bef != schema_aft:
+        logger.error(f"Unexpected schema change: Before={schema_bef} and After={schema_aft}")
+        raise Exception("Custom data check failed")
 
 
 @task(name="Cleanup Spark Session")
@@ -551,10 +715,6 @@ def near_deduplication_flow(
         The number of rows per band.
     column : str, optional
         The column to deduplicate.
-    staging_gcs_bucket: str
-        The GCS bucket to keep staging files
-    staging_dir: str
-        The directory to keep staging files
 
     Returns
     -------
@@ -590,8 +750,25 @@ def near_deduplication_flow(
     # Find connected components
     results = find_connected_components()
 
+    # Deequ Analyse before deduplication
+    df_name_analyze_bef = analyze_data_quality(df_name="task=load_data_from_bigquery/bq_dataframe")
+
+    # Deequ Data Quality check before deduplication
+    run_data_quality_checks(df_name="task=load_data_from_bigquery/bq_dataframe")
+
     # # Remove duplicates
     remove_duplicates(results, output)
+
+    # Deequ Analyse after deduplication
+    df_name_analyze_aft = analyze_data_quality(df_name="task=remove_duplicates/results")
+
+    # Deequ Data Quality check after deduplication
+    run_data_quality_checks(df_name="task=remove_duplicates/results")
+
+    # Custom data quality checks
+    custom_data_quality_checks(
+        df_before_name=df_name_analyze_bef, df_after_name=df_name_analyze_aft
+    )
 
     logger.info("Near-deduplication flow completed successfully")
 

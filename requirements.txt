@@ -102,6 +102,7 @@ pydantic-extra-types==2.10.2
 pydantic-settings==2.8.1
 pydantic_core==2.27.2
 pydata-google-auth==1.9.1
+pydeequ==1.4.0
 Pygments==2.19.1
 pylint==3.3.5
 pyspark==3.5.5
