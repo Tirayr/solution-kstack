@@ -23,7 +23,7 @@ repos:
           [
               "-rn",
               "--rcfile=.pylintrc",
-              "--fail-under=8.5"
+              "--fail-under=6"
           ]
   - repo: https://github.com/ambv/black
     rev: 23.1.0

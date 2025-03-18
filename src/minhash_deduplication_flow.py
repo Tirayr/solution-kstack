@@ -474,7 +474,7 @@ def analyze_data_quality(df_name: str):
 
     spark = init_spark_session()
     df = read_from_gcs(spark, df_name)
-    df_name = "task=analyze_data_quality/analysis_result_df({df_name})"
+    df_name = f"task=analyze_data_quality/analysis_result_df(Input Dataset={df_name})"
 
     analyzers = [Size()]
 
@@ -529,7 +529,7 @@ def analyze_data_quality(df_name: str):
     # add new row to DataFrame
     analysis_result_df = analysis_df.union(schema_df)
 
-    analysis_result_df.show(50)
+    analysis_result_df.show(n=100, truncate=False)
     store_in_gcs(analysis_result_df, df_name)
 
     return df_name
@@ -575,7 +575,10 @@ def run_data_quality_checks(df_name: str):
     verification_result = VerificationSuite(spark).onData(df).addCheck(check).run()
     check_results_df = VerificationResult.checkResultsAsDataFrame(spark, verification_result)
 
-    check_results_df.show(truncate=False)
+    check_results_df.show(n=100, truncate=False)
+    store_in_gcs(
+        check_results_df, f"task=run_data_quality_checks/check_results_df(Input Dataset={df_name}"
+    )
 
     # Check if there are any failures
     failed_checks = check_results_df.filter("check_status != 'Success'")
@@ -584,8 +587,6 @@ def run_data_quality_checks(df_name: str):
         raise Exception(f"Data quality checks failed for df_name={df_name}!")
     else:
         logger.info("All input data quality checks passed.")
-
-    store_in_gcs(check_results_df, f"task=generate_edges/run_data_quality_checks({df_name})")
 
 
 @task(name="Remove Duplicates")
@@ -622,7 +623,7 @@ def remove_duplicates(results, output: str):
 
     # Show a sample of the components for debugging
     logger.info("Sample of components:")
-    components.show(10)
+    components.show(n=100, truncate=False)
 
     # Join with original DataFrame and filter out duplicates
     logger.info("Removing duplicates from original DataFrame")
@@ -657,16 +658,22 @@ def custom_data_quality_checks(df_before_name: str, df_after_name: str):
         (F.col("entity") == "Dataset") & (F.col("name") == "Size")
     ).select(F.col("value"))
 
+    row_cnt_bef_df.show(n=100, truncate=False)
+    row_cnt_after_df.show(n=100, truncate=False)
+
+    store_in_gcs(row_cnt_bef_df, "task=custom_data_quality_checks/row_cnt_bef_df")
+    store_in_gcs(row_cnt_after_df, "task=custom_data_quality_checks/row_cnt_after_df")
+
     if row_cnt_bef_df.count() > 0 and row_cnt_after_df.count() > 0:
         row_cnt_bef_row = row_cnt_bef_df.collect()[0]
         row_cnt_after_row = row_cnt_after_df.collect()[0]
 
-        row_cnt_bef = int(row_cnt_bef_row["value"])
-        row_cnt_after = int(row_cnt_after_row["value"])
+        row_cnt_bef = int(float(row_cnt_bef_row["value"]))
+        row_cnt_after = int(float(row_cnt_after_row["value"]))
 
         percentage_diff = ((row_cnt_bef - row_cnt_after) / row_cnt_bef) * 100
 
-        if not 80 < percentage_diff < 100:
+        if not 0 < percentage_diff < 30:
             logger.error(
                 f"Unexpected row count: Before={row_cnt_bef} and After={row_cnt_after}, percentage difference={percentage_diff}"
             )
@@ -682,6 +689,12 @@ def custom_data_quality_checks(df_before_name: str, df_after_name: str):
     schema_aft_df = df_after.filter(
         (F.col("entity") == "Dataset") & (F.col("name") == "schema")
     ).select(F.col("value"))
+
+    schema_bef_df.show(n=100, truncate=False)
+    schema_aft_df.show(n=100, truncate=False)
+
+    store_in_gcs(schema_bef_df, "task=custom_data_quality_checks/schema_bef_df")
+    store_in_gcs(schema_aft_df, "task=custom_data_quality_checks/schema_aft_df")
 
     if schema_bef_df.count() > 0 and schema_aft_df.count() > 0:
         schema_bef_row = schema_bef_df.collect()[0]
